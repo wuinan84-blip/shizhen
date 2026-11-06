@@ -2,6 +2,7 @@
 # 打包发布用的 zip；加 --publish 时同时在 GitHub 上创建 Release 并上传。
 # 用法：./scripts/release.sh             只打包到 dist/
 #       ./scripts/release.sh --publish   打包并发布（需要先用 gh 登录 GitHub）
+#       CHANGES="- 改了什么" ./scripts/release.sh --publish   在发布说明开头写上这次的更新内容
 # 版本号取自 Resources/Info.plist 的 CFBundleShortVersionString，发布前先改它。
 set -euo pipefail
 
@@ -48,6 +49,9 @@ NOTES="$(cat <<EOF
 要求 macOS 15 及以上、Apple 芯片（M1 及以后）。完整说明见 [README](https://github.com/$REPO#readme)。
 EOF
 )"
+if [ -n "${CHANGES:-}" ]; then
+  NOTES="$(printf '## 更新内容\n\n%s\n\n%s' "$CHANGES" "$NOTES")"
+fi
 
 "$GH" release create "$TAG" "$ZIP" --title "拾帧 $VERSION" --notes "$NOTES" --target "$(git rev-parse HEAD)"
 echo "已发布：https://github.com/$REPO/releases/tag/$TAG"
