@@ -1,0 +1,9 @@
+.build/
+build/
+dist/
+.signing/
+.tools/
+docs/
+scripts/stitch-sim/
+.DS_Store
+*.xcodeproj/xcuserdata/
