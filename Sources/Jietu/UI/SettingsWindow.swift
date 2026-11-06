@@ -12,7 +12,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 480),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            w.title = "截图录屏 设置"
+            w.title = "拾帧 设置"
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView())
             w.center()
@@ -333,7 +333,7 @@ struct AboutTab: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "scissors").font(.system(size: 40)).foregroundStyle(Color.accentColor)
-            Text("截图录屏").font(.title2.bold())
+            Text("拾帧").font(.title2.bold())
             Text("版本 \(version)").foregroundStyle(.secondary)
             Text("默认所有处理都在本机完成，不联网、不收集任何使用数据。\n只有在「翻译」中切换到百度翻译后，才会把识别出的文字发送给百度。")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)

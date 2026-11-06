@@ -6,10 +6,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/build/截图录屏.app"
+APP="$ROOT/build/拾帧.app"
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT/Resources/Info.plist")"
 TAG="v$VERSION"
-# GitHub 会改写附件名里的中文，所以 zip 用英文名；解压出来仍是「截图录屏.app」。
+# GitHub 会改写附件名里的中文，所以 zip 用英文名；解压出来仍是「拾帧.app」。
 ZIP="$ROOT/dist/shizhen-$VERSION-macOS-arm64.zip"
 
 cd "$ROOT"
@@ -40,14 +40,14 @@ REPO="$("$GH" repo view --json nameWithOwner -q .nameWithOwner)"
 NOTES="$(cat <<EOF
 ## 下载安装
 
-1. 下载下面的 \`shizhen-$VERSION-macOS-arm64.zip\`，双击解压，把「截图录屏」拖进「应用程序」文件夹。
+1. 下载下面的 \`shizhen-$VERSION-macOS-arm64.zip\`，双击解压，把「拾帧」拖进「应用程序」文件夹。
 2. 第一次打开时，macOS 会提示无法验证开发者，先点「完成」。
-3. 打开「系统设置 → 隐私与安全性」，滚动到底部，在「截图录屏」那一行点「仍要打开」，输入开机密码确认。
+3. 打开「系统设置 → 隐私与安全性」，滚动到底部，在「拾帧」那一行点「仍要打开」，输入开机密码确认。
 4. 按引导授予「屏幕录制」权限，然后重启应用。之后按 \`⌃⌥A\` 开始截图或录屏。
 
 要求 macOS 15 及以上、Apple 芯片（M1 及以后）。完整说明见 [README](https://github.com/$REPO#readme)。
 EOF
 )"
 
-"$GH" release create "$TAG" "$ZIP" --title "截图录屏 $VERSION" --notes "$NOTES" --target "$(git rev-parse HEAD)"
+"$GH" release create "$TAG" "$ZIP" --title "拾帧 $VERSION" --notes "$NOTES" --target "$(git rev-parse HEAD)"
 echo "已发布：https://github.com/$REPO/releases/tag/$TAG"

@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.attributedTitle = s
         } else {
             button.attributedTitle = NSAttributedString(string: "")
-            let image = NSImage(systemSymbolName: "scissors", accessibilityDescription: "截图录屏")
+            let image = NSImage(systemSymbolName: "scissors", accessibilityDescription: "拾帧")
             image?.isTemplate = true
             button.image = image
         }

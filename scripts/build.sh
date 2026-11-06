@@ -1,11 +1,11 @@
 #!/bin/bash
-# 编译并打包成 build/截图录屏.app，用项目内的固定证书签名。
+# 编译并打包成 build/拾帧.app，用项目内的固定证书签名。
 # 用法：./scripts/build.sh [debug|release]   默认 release
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-release}"
-APP_NAME="截图录屏"
+APP_NAME="拾帧"
 APP="$ROOT/build/$APP_NAME.app"
 KEYCHAIN="$ROOT/.signing/jietu-signing.keychain-db"
 IDENTITY="Jietu Local Signing"

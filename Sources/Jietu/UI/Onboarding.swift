@@ -10,7 +10,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 360),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "欢迎使用截图录屏"
+            w.title = "欢迎使用拾帧"
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: OnboardingView(close: { [weak self] in self?.window?.close() }))
             w.center()
@@ -35,12 +35,12 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "scissors").font(.system(size: 28)).foregroundStyle(Color.accentColor)
-                Text("截图录屏需要「屏幕录制」权限").font(.title3.bold())
+                Text("拾帧需要「屏幕录制」权限").font(.title3.bold())
             }
             Text("截图、录屏和识别窗口位置都需要读取屏幕画面。所有处理都在本机完成。")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
-                step(1, "点击下方「去授权」，在弹出的系统设置里打开「截图录屏」的开关。")
+                step(1, "点击下方「去授权」，在弹出的系统设置里打开「拾帧」的开关。")
                 step(2, "回到这里点击「重启应用」（macOS 需要重启应用后权限才生效）。")
                 step(3, "按 \(Prefs.shared.shortcut(.capture).displayString) 开始截图或录屏。")
             }

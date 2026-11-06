@@ -1,20 +1,26 @@
-# 截图录屏
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="拾帧的应用图标">
+</p>
 
-macOS 菜单栏上的截图和录屏工具。按 `⌃⌥A` 框选屏幕区域，可以标注、提取文字、翻译、截长图，或者录成 MP4 / GIF。所有处理默认都在本机完成，不收集任何数据。
+<h1 align="center">拾帧</h1>
+
+<p align="center">macOS 菜单栏上的截图和录屏工具</p>
+
+按 `⌃⌥A` 框选屏幕区域，可以标注、提取文字、翻译、截长图，或者录成 MP4 / GIF。所有处理默认都在本机完成，不收集任何数据。
 
 ## 下载安装
 
 要求：macOS 15 及以上，Apple 芯片（M1 及以后）的 Mac。
 
-1. 到 [Releases 页面](https://github.com/wuinan84-blip/shizhen/releases/latest) 下载 `shizhen-版本号-macOS-arm64.zip`，双击解压，把「截图录屏」拖进「应用程序」文件夹。
-2. 第一次打开时，macOS 会提示「Apple 无法验证"截图录屏"是否包含恶意软件」。这是因为本应用没有经过苹果的付费公证，点「完成」即可。
-3. 打开「系统设置 → 隐私与安全性」，滚动到「安全性」部分，在「"截图录屏"已被阻止」旁边点「仍要打开」，输入开机密码确认。这一步只需要做一次。
+1. 到 [Releases 页面](https://github.com/wuinan84-blip/shizhen/releases/latest) 下载 `shizhen-版本号-macOS-arm64.zip`，双击解压，把「拾帧」拖进「应用程序」文件夹。
+2. 第一次打开时，macOS 会提示「Apple 无法验证"拾帧"是否包含恶意软件」。这是因为本应用没有经过苹果的付费公证，点「完成」即可。
+3. 打开「系统设置 → 隐私与安全性」，滚动到「安全性」部分，在「"拾帧"已被阻止」旁边点「仍要打开」，输入开机密码确认。这一步只需要做一次。
 4. 应用不在程序坞显示，只在屏幕右上角的菜单栏有一个图标。按首次启动的引导授予「屏幕录制」权限，然后重启应用。
 
 第 2、3 步也可以用一条终端命令代替：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/截图录屏.app
+xattr -dr com.apple.quarantine /Applications/拾帧.app
 ```
 
 ## 权限
@@ -80,7 +86,7 @@ xattr -dr com.apple.quarantine /Applications/截图录屏.app
 git clone https://github.com/wuinan84-blip/shizhen.git
 cd shizhen
 ./scripts/build.sh
-open build/截图录屏.app
+open build/拾帧.app
 ```
 
 第一次运行 `build.sh` 时，会在 `.signing/` 里生成一张只在本机使用的签名证书，之后每次编译都用它签名。这样重新编译后，系统授予的屏幕录制等权限不会失效。
