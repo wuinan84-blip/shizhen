@@ -9,7 +9,7 @@ protocol OverlayViewDelegate: AnyObject {
     func overlayStartRecording(_ options: RecordingOptions)
     func overlayCancelCountdown()
     func overlayRequestMicrophone(_ completion: @escaping (Bool) -> Void)
-    func overlayConfirmModeSwitch() -> Bool
+    func overlayConfirmModeSwitch(to mode: CaptureMode) -> Bool
 }
 
 /// 截图 / 录屏的选区界面。坐标系：左上角为原点，单位 pt，范围是整个显示器。
@@ -50,6 +50,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
     let toolbar = ScreenshotToolbar(showsExtras: true)
     let propertyBar = PropertyBar()
     let recordBar = RecordBar()
+    let scrollBar = ScrollStartBar()
 
     init(frame: CGRect, screenImage: CGImage, scale: CGFloat, windowRects: [CGRect], safeTop: CGFloat) {
         self.screenImage = screenImage
@@ -73,11 +74,12 @@ final class OverlayView: NSView, AnnotationEditorHost {
         hoverBorder.isHidden = true
 
         for v in [backgroundView, maskView, hoverBorder, canvas, sizeLabel, countdownLabel] as [NSView] { addSubview(v) }
-        for v in [modeBar, toolbar, propertyBar, recordBar] as [NSView] { addSubview(v) }
+        for v in barViews { addSubview(v) }
         countdownLabel.isHidden = true
         toolbar.isHidden = true
         propertyBar.isHidden = true
         recordBar.isHidden = true
+        scrollBar.isHidden = true
         wireBars()
         refresh()
     }
@@ -110,7 +112,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
         toolbar.onRedo = { [weak self] in self?.editor.redo() }
         toolbar.onOCR = { [weak self] in self?.delegate?.overlayRecognizeText(translate: false) }
         toolbar.onTranslate = { [weak self] in self?.delegate?.overlayRecognizeText(translate: true) }
-        toolbar.onScroll = { [weak self] in self?.delegate?.overlayScrollCapture() }
+        scrollBar.onStart = { [weak self] in self?.delegate?.overlayScrollCapture() }
         toolbar.onCancel = { [weak self] in self?.delegate?.overlayCancel() }
         toolbar.onSave = { [weak self] in self?.delegate?.overlaySave() }
         toolbar.onConfirm = { [weak self] in self?.delegate?.overlayConfirm() }
@@ -124,19 +126,17 @@ final class OverlayView: NSView, AnnotationEditorHost {
     func setMode(_ m: CaptureMode) {
         mode = m
         modeBar.mode = m
-        if m == .record {
-            editor.tool = nil
-            recordBar.reset()
-        }
+        if m != .screenshot { editor.tool = nil }
+        if m == .record { recordBar.reset() }
         refresh()
     }
 
     private func switchMode(_ m: CaptureMode) {
         guard m != mode else { return }
-        if m == .record {
+        if m != .screenshot {
             editor.commitText()
             if !editor.annotations.isEmpty {
-                guard delegate?.overlayConfirmModeSwitch() == true else { modeBar.mode = mode; return }
+                guard delegate?.overlayConfirmModeSwitch(to: m) == true else { modeBar.mode = mode; return }
                 editor.clearAll()
             }
         }
@@ -152,14 +152,20 @@ final class OverlayView: NSView, AnnotationEditorHost {
 
         let showToolbar = barsVisible && mode == .screenshot
         let showProps = showToolbar && editor.tool != nil
-        let showRecord = barsVisible && mode == .record
         toolbar.isHidden = !showToolbar
         propertyBar.isHidden = !showProps
-        recordBar.isHidden = !showRecord
+        recordBar.isHidden = !(barsVisible && mode == .record)
+        scrollBar.isHidden = !(barsVisible && mode == .scroll)
         guard barsVisible else { return }
 
         let gap: CGFloat = 8
-        let main: NSSize = mode == .screenshot ? toolbar.fittingBarSize : recordBar.fittingBarSize
+        let mainBar: BarView
+        switch mode {
+        case .screenshot: mainBar = toolbar
+        case .scroll: mainBar = scrollBar
+        case .record: mainBar = recordBar
+        }
+        let main = mainBar.fittingBarSize
         let props: NSSize = showProps ? propertyBar.fittingBarSize : .zero
         let total = main.height + (showProps ? props.height + 6 : 0)
 
@@ -171,10 +177,9 @@ final class OverlayView: NSView, AnnotationEditorHost {
         } else {
             y = selection.maxY - gap - total
         }
-        var x = selection.maxX - main.width
+        var x = mode == .scroll ? selection.midX - main.width / 2 : selection.maxX - main.width
         x = min(max(x, 4), bounds.width - main.width - 4)
-        let mainFrame = CGRect(x: x.rounded(), y: y.rounded(), width: main.width, height: main.height)
-        if mode == .screenshot { toolbar.frame = mainFrame } else { recordBar.frame = mainFrame }
+        mainBar.frame = CGRect(x: x.rounded(), y: y.rounded(), width: main.width, height: main.height)
         if showProps {
             var px = x
             px = min(max(px, 4), bounds.width - props.width - 4)
@@ -182,7 +187,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
         }
     }
 
-    private var barViews: [NSView] { [modeBar, toolbar, propertyBar, recordBar] }
+    private var barViews: [NSView] { [modeBar, toolbar, propertyBar, recordBar, scrollBar] }
 
     private func barContains(_ p: CGPoint) -> Bool {
         barViews.contains { !$0.isHidden && $0.frame.contains(p) }
@@ -207,8 +212,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
             canvas.isHidden = true
         }
         updateSizeLabel(hole)
-        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo,
-                       canScroll: editor.isEmpty)
+        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo)
         layoutBars()
     }
 
@@ -230,7 +234,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
     func editorNeedsDisplay() { canvas.needsDisplay = true }
     func editorContentChanged() {
         canvas.needsDisplay = true
-        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo, canScroll: editor.isEmpty)
+        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo)
         if let t = editor.tool, propertyBar.tool != t { propertyBar.configure(tool: t) }
         layoutBars()
     }
@@ -343,7 +347,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
                 editorOwnsDrag = true
                 return
             }
-            if !isLocked && selection.contains(p) && (mode == .record || editor.tool == nil) {
+            if !isLocked && selection.contains(p) && (mode != .screenshot || editor.tool == nil) {
                 selectionDrag = .move(orig: selection, start: p)
             }
         }
@@ -436,6 +440,7 @@ final class OverlayView: NSView, AnnotationEditorHost {
         }
         if isLive { return true }
         if prefs.shortcut(.cancel).matches(e) { delegate?.overlayCancel(); return true }
+        if phase == .selected, mode == .scroll, prefs.shortcut(.confirm).matches(e) { delegate?.overlayScrollCapture(); return true }
         guard phase == .selected, mode == .screenshot else { return false }
         if prefs.shortcut(.confirm).matches(e) { delegate?.overlayConfirm(); return true }
         if prefs.shortcut(.save).matches(e) { delegate?.overlaySave(); return true }

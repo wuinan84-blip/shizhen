@@ -448,23 +448,45 @@ class BarView: NSView {
 
 // MARK: - 模式切换条
 
-enum CaptureMode { case screenshot, record }
+enum CaptureMode { case screenshot, scroll, record }
 
 final class ModeBar: BarView {
     var onChange: ((CaptureMode) -> Void)?
     private let shot = IconButton(symbols: ["scissors"], title: "截图", style: .segment, height: 28, pointSize: 13)
+    private let scroll = IconButton(symbols: ["arrow.up.and.down.text.horizontal", "scroll", "arrow.up.and.down"], title: "滚动截图",
+                                    style: .segment, height: 28, pointSize: 13)
     private let record = IconButton(symbols: ["record.circle"], title: "录屏", style: .segment, height: 28, pointSize: 13)
 
     var mode: CaptureMode = .screenshot {
-        didSet { shot.isSelected = mode == .screenshot; record.isSelected = mode == .record }
+        didSet {
+            shot.isSelected = mode == .screenshot
+            scroll.isSelected = mode == .scroll
+            record.isSelected = mode == .record
+        }
     }
 
     override init() {
         super.init()
         shot.isSelected = true
         shot.action = { [weak self] in self?.onChange?(.screenshot) }
+        scroll.action = { [weak self] in self?.onChange?(.scroll) }
         record.action = { [weak self] in self?.onChange?(.record) }
-        setViews([shot, record])
+        setViews([shot, scroll, record])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+/// 滚动截图模式下选区下方的「开始滚动截图」。
+final class ScrollStartBar: BarView {
+    var onStart: (() -> Void)?
+
+    override init() {
+        super.init()
+        let start = IconButton(symbols: ["arrow.up.and.down.text.horizontal", "scroll", "arrow.up.and.down"], title: "开始滚动截图",
+                               tooltip: "开始滚动截图（回车）", style: .filled(UIStyle.blue), height: 28, pointSize: 13)
+        start.action = { [weak self] in self?.onStart?() }
+        setViews([start])
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -478,7 +500,6 @@ final class ScreenshotToolbar: BarView {
     var onRedo: (() -> Void)?
     var onOCR: (() -> Void)?
     var onTranslate: (() -> Void)?
-    var onScroll: (() -> Void)?
     var onCancel: (() -> Void)?
     var onSave: (() -> Void)?
     var onConfirm: (() -> Void)?
@@ -486,7 +507,6 @@ final class ScreenshotToolbar: BarView {
     private var toolButtons: [ToolKind: IconButton] = [:]
     private let undoButton = IconButton(symbols: ["arrow.uturn.backward"], tooltip: "撤销")
     private let redoButton = IconButton(symbols: ["arrow.uturn.forward"], tooltip: "重做")
-    private let scrollButton = IconButton(symbols: ["arrow.up.and.down.text.horizontal", "scroll", "arrow.up.and.down"], tooltip: "滚动截图")
 
     static let toolSymbols: [ToolKind: [String]] = [
         .rect: ["rectangle"], .ellipse: ["circle"], .arrow: ["arrow.up.right"], .line: ["line.diagonal"],
@@ -514,8 +534,7 @@ final class ScreenshotToolbar: BarView {
             ocr.action = { [weak self] in self?.onOCR?() }
             let translate = IconButton(symbols: ["translate", "character.bubble"], tooltip: "翻译")
             translate.action = { [weak self] in self?.onTranslate?() }
-            scrollButton.action = { [weak self] in self?.onScroll?() }
-            views += [ocr, translate, scrollButton]
+            views += [ocr, translate]
         }
         views.append(SeparatorView())
         let cancel = IconButton(symbols: ["xmark"], tooltip: "退出（不保存）")
@@ -532,12 +551,10 @@ final class ScreenshotToolbar: BarView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(tool: ToolKind?, canUndo: Bool, canRedo: Bool, canScroll: Bool) {
+    func update(tool: ToolKind?, canUndo: Bool, canRedo: Bool) {
         for (k, b) in toolButtons { b.isSelected = k == tool }
         undoButton.isEnabled = canUndo
         redoButton.isEnabled = canRedo
-        scrollButton.isEnabled = canScroll
-        scrollButton.tip = canScroll ? "滚动截图" : "滚动截图（画了标注后不可用）"
     }
 }
 

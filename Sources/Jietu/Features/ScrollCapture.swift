@@ -1,68 +1,20 @@
 import AppKit
 import ScreenCaptureKit
-import SwiftUI
 
 enum ScrollCaptureResult {
+    /// 回到选区阶段。
     case cancelled
-    case finished(CGImage, CGFloat)
-}
-
-final class ScrollPanelModel: ObservableObject {
-    @Published var preview: NSImage?
-    @Published var status = "请在选区内向下滚动，或点「自动滚动」"
-    @Published var warning: String?
-    @Published var autoScrolling = false
-    @Published var stitchedHeight = 0
-
-    var onAuto: (() -> Void)?
-    var onFinish: (() -> Void)?
-    var onCancel: (() -> Void)?
-}
-
-struct ScrollPanelView: View {
-    @ObservedObject var model: ScrollPanelModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("滚动截图").font(.system(size: 13, weight: .semibold))
-            ZStack {
-                RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor))
-                if let img = model.preview {
-                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).padding(4)
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-            }
-            .frame(height: 300)
-            Text(model.stitchedHeight > 0 ? "已拼接 \(model.stitchedHeight) 像素" : " ")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            Text(model.warning ?? model.status)
-                .font(.system(size: 12))
-                .foregroundStyle(model.warning == nil ? Color.secondary : Color.red)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Button(model.autoScrolling ? "停止滚动" : "自动滚动") { model.onAuto?() }
-                Spacer()
-                Button("取消") { model.onCancel?() }
-                Button("完成") { model.onFinish?() }.keyboardShortcut(.defaultAction)
-            }
-            Text("提示：选区尽量只框住会滚动的内容，避开动画和视频。点「自动滚动」前，先把鼠标在要滚动的内容上停一下，自动滚动会在那里滚。")
-                .font(.system(size: 11)).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(14)
-        .frame(width: 250)
-    }
-}
-
-final class ScrollCapturePanel: NSPanel {
-    var onEscape: (() -> Void)?
-    override func cancelOperation(_ sender: Any?) { onEscape?() }
+    /// 已复制或已保存，结束本次截图。
+    case done
+    /// 打开长图编辑窗口。
+    case edit(CGImage, CGFloat)
 }
 
 /// 滚动截图：实时采集选区画面并拼接，滚动操作直接传给下面的应用。
 final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate {
     static var current: ScrollCaptureController?
+
+    private enum Output { case copy, save, edit }
 
     private let screen: NSScreen
     private let rect: CGRect
@@ -70,16 +22,19 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
     private let completion: (ScrollCaptureResult) -> Void
     private let stitcher = Stitcher()
     private let queue = DispatchQueue(label: "jietu.scroll-capture")
-    private let model = ScrollPanelModel()
-    private var panel: ScrollCapturePanel!
+    private let hud: ScrollCaptureHUD
     private var stream: SCStream?
     private var finished = false
+    private var busy = false
+    private var autoScrolling = false
+    private var warningShown = false
 
-    /// 以下两个只在 queue 上访问。
+    /// 以下几个只在 queue 上访问。
     private lazy var autoScroller = AutoScroller(stitcher: stitcher, viewHeight: rect.height, scale: scale)
     private var autoActive = false
     private var autoGeneration = 0
     private var autoCenter = CGPoint.zero
+    private var autoTarget: BackgroundScroll.Target?
     private var debugDumps = 0
     private var limitReached = false
     private var lastPreviewTime: CFTimeInterval = 0
@@ -89,55 +44,41 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
     private var lastPointer: CGPoint?
 
     static func start(screen: NSScreen, rect: CGRect, anchor: CGRect, completion: @escaping (ScrollCaptureResult) -> Void) {
-        let c = ScrollCaptureController(screen: screen, rect: rect, completion: completion)
+        let c = ScrollCaptureController(screen: screen, rect: rect, anchor: anchor, completion: completion)
         current = c
-        c.showPanel(near: anchor)
+        c.hud.show()
+        c.hud.toast("请缓慢向上或向下滚动页面，或点击「自动滚动」，开始截图", duration: 4)
         c.installPointerMonitor()
         Task { @MainActor in
             do {
                 try await c.startStream()
             } catch {
-                c.model.warning = "无法开始采集：\(error.localizedDescription)"
+                c.hud.toast("无法开始采集：\(error.localizedDescription)", warning: true, duration: nil)
             }
         }
     }
 
-    private init(screen: NSScreen, rect: CGRect, completion: @escaping (ScrollCaptureResult) -> Void) {
+    private init(screen: NSScreen, rect: CGRect, anchor: CGRect, completion: @escaping (ScrollCaptureResult) -> Void) {
         self.screen = screen
         self.rect = rect
         self.scale = screen.backingScaleFactor
         self.completion = completion
+        self.hud = ScrollCaptureHUD(selection: anchor, screen: screen)
         super.init()
-        model.onAuto = { [weak self] in self?.toggleAuto() }
-        model.onFinish = { [weak self] in self?.finish() }
-        model.onCancel = { [weak self] in self?.cancel() }
+        hud.onAuto = { [weak self] in self?.toggleAuto() }
+        hud.onFinish = { [weak self] in self?.output(.copy) }
+        hud.onSave = { [weak self] in self?.output(.save) }
+        hud.onEdit = { [weak self] in self?.output(.edit) }
+        hud.onCancel = { [weak self] in self?.cancel() }
+        hud.onKey = { [weak self] e in self?.handleKey(e) ?? false }
     }
 
-    private func showPanel(near anchor: CGRect) {
-        let p = ScrollCapturePanel(contentRect: CGRect(x: 0, y: 0, width: 250, height: 480),
-                                   styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        p.titleVisibility = .hidden
-        p.titlebarAppearsTransparent = true
-        p.isMovableByWindowBackground = true
-        p.level = .capturePanel
-        p.hidesOnDeactivate = false
-        p.isReleasedWhenClosed = false
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        p.onEscape = { [weak self] in self?.cancel() }
-        let host = NSHostingView(rootView: ScrollPanelView(model: model))
-        p.contentView = host
-        p.setContentSize(host.fittingSize)
-        let size = p.frame.size
-        let vf = screen.visibleFrame
-        var x = anchor.maxX + 12
-        if x + size.width > vf.maxX { x = anchor.minX - 12 - size.width }
-        if x < vf.minX { x = anchor.maxX - size.width - 12 }
-        x = min(max(x, vf.minX + 4), vf.maxX - size.width - 4)
-        let y = min(max(anchor.maxY - size.height, vf.minY + 4), vf.maxY - size.height - 4)
-        p.setFrameOrigin(CGPoint(x: x, y: y))
-        panel = p
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
+    private func handleKey(_ e: NSEvent) -> Bool {
+        let prefs = Prefs.shared
+        if prefs.shortcut(.cancel).matches(e) { cancel(); return true }
+        if prefs.shortcut(.confirm).matches(e) { output(.copy); return true }
+        if prefs.shortcut(.save).matches(e) { output(.save); return true }
+        return false
     }
 
     private func startStream() async throws {
@@ -173,8 +114,7 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
         }
         let result = stitcher.add(pb)
         if result == .noMatch { dumpFailureIfNeeded() }
-        let height = stitcher.height
-        DispatchQueue.main.async { [weak self] in self?.handle(result, height: height) }
+        DispatchQueue.main.async { [weak self] in self?.handle(result) }
     }
 
     /// 拼接失败时把画面存到缓存目录，方便排查（每次滚动截图最多 3 份，24 小时后清理）。在 queue 上执行。
@@ -203,44 +143,52 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         DispatchQueue.main.async { [weak self] in
-            self?.model.warning = "采集已停止：\(error.localizedDescription)"
+            self?.hud.toast("采集已停止：\(error.localizedDescription)", warning: true, duration: nil)
         }
     }
 
-    private func handle(_ result: Stitcher.AddResult, height: Int) {
+    private func handle(_ result: Stitcher.AddResult) {
         guard !finished else { return }
-        model.stitchedHeight = height
         switch result {
         case .noMatch:
             // 自动滚动时滚过头会自己往回找，不提示
-            if !model.autoScrolling {
-                model.warning = "这一段没接上：请往回滚一点，再继续往下滚。如果一直接不上，请缩小选区，只框住会滚动的内容。"
+            if !autoScrolling {
+                warningShown = true
+                hud.toast("这一段没接上：请往回滚一点，再继续往下滚。如果一直接不上，请缩小选区，只框住会滚动的内容。",
+                          warning: true, duration: nil)
             }
         case .grew:
-            model.warning = nil
-            if !model.autoScrolling { model.status = "继续滚动，或点「完成」" }
+            clearWarning()
             schedulePreview()
         case .limitReached:
             limitReached = true
-            model.warning = "已达到长图高度上限（\(Stitcher.maxHeight) 像素），请点「完成」。"
+            warningShown = true
+            hud.toast("已达到长图高度上限（\(Stitcher.maxHeight) 像素），请点「完成」", warning: true, duration: nil)
             stopAuto()
             schedulePreview()
         case .unchanged:
-            if !limitReached { model.warning = nil }
+            if !limitReached { clearWarning() }
         }
+    }
+
+    private func clearWarning() {
+        guard warningShown else { return }
+        warningShown = false
+        hud.hideToast()
     }
 
     private func schedulePreview() {
         guard !previewPending else { return }
         previewPending = true
-        let delay = max(0, 0.25 - (CACurrentMediaTime() - lastPreviewTime))
+        let delay = max(0, 0.4 - (CACurrentMediaTime() - lastPreviewTime))
+        let size = hud.previewPixelSize
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
-            let img = self.stitcher.makeImage(maxRowsFromBottom: max(self.stitcher.width * 2, 1))
+            let img = self.stitcher.makeThumbnail(maxWidth: size.width, maxHeight: size.height)
             DispatchQueue.main.async {
                 self.previewPending = false
                 self.lastPreviewTime = CACurrentMediaTime()
-                if let img { self.model.preview = NSImage(cgImage: img, size: NSSize(width: img.width, height: img.height)) }
+                if let img, !self.finished { self.hud.setPreview(img) }
             }
         }
     }
@@ -248,22 +196,24 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
     // MARK: 自动滚动
 
     private func toggleAuto() {
-        if model.autoScrolling { stopAuto(); return }
+        guard !finished, !busy else { return }
+        if autoScrolling { stopAuto(); return }
         guard Permission.accessibility.isGranted else {
             PermissionAlert.show(.accessibility, message: "「自动滚动」需要模拟滚轮操作其他应用，需要「辅助功能」权限。手动滚动不受影响。",
                                  level: .capturePanel)
             return
         }
         guard !limitReached, stream != nil else { return }
-        model.autoScrolling = true
-        model.warning = nil
-        model.status = "正在自动滚动…"
+        autoScrolling = true
+        hud.autoScrolling = true
+        clearWarning()
         let global = globalRect
         let target = lastPointer ?? CGPoint(x: global.midX, y: global.midY)
-        CGWarpMouseCursorPosition(target)
+        let window = BackgroundScroll.target(at: target)
         queue.async { [weak self] in
             guard let self, !self.finished else { return }
             self.autoCenter = target
+            self.autoTarget = window
             self.autoActive = true
             self.autoGeneration += 1
             self.apply(self.autoScroller.start(at: CACurrentMediaTime()))
@@ -278,8 +228,7 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
             let (result, action) = self.autoScroller.tick(at: CACurrentMediaTime())
             if let result {
                 if result == .noMatch { self.dumpFailureIfNeeded() }
-                let height = self.stitcher.height
-                DispatchQueue.main.async { self.handle(result, height: height) }
+                DispatchQueue.main.async { self.handle(result) }
             }
             self.apply(action)
             if self.autoActive { self.scheduleAutoTick(generation) }
@@ -299,26 +248,37 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
         }
     }
 
-    /// points 为正时向下滚动（内容向上移动）。
+    /// points 为正时向下滚动（内容向上移动）。在 queue 上执行。
     private func postScroll(_ points: CGFloat) {
-        let delta = Int32((-points).rounded())
-        guard delta != 0,
-              let ev = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { return }
-        ev.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        ev.location = autoCenter
-        ev.post(tap: .cghidEventTap)
+        let pixels = Int32(points.rounded())
+        guard pixels != 0 else { return }
+        let point = autoCenter
+        guard let target = autoTarget else {
+            // 找不到目标窗口时只在鼠标所在处滚，不去拉动鼠标
+            CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -pixels, wheel2: 0, wheel3: 0)?
+                .post(tap: .cghidEventTap)
+            return
+        }
+        DispatchQueue.main.async {
+            BackgroundScroll.hover(target, at: point)
+            self.queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.autoActive, !self.finished else { return }
+                BackgroundScroll.scroll(target, at: point, pixels: pixels)
+            }
+        }
     }
 
     private func autoStopped(_ reason: AutoScroller.StopReason) {
-        guard model.autoScrolling else { return }
-        model.autoScrolling = false
+        guard autoScrolling else { return }
+        autoScrolling = false
+        hud.autoScrolling = false
         switch reason {
         case .reachedBottom:
-            model.status = "已滚动到底部，请点「完成」"
+            hud.toast("已滚动到底部，可以点「完成」了")
         case .noResponse:
-            model.warning = "页面没有响应自动滚动。请把鼠标移到要滚动的内容上再试，或改用手动滚动。"
+            hud.toast("页面没有响应自动滚动。请把鼠标移到要滚动的内容上再试，或改用手动滚动。", warning: true, duration: 5)
         case .failed:
-            model.warning = "自动滚动时拼接失败，可能是选区里有动画或悬浮元素。请缩小选区后重试，或改用手动滚动。"
+            hud.toast("自动滚动时没接上，可能是选区里有动画或悬浮元素。请缩小选区后重试，或改用手动滚动。", warning: true, duration: 5)
         case .limitReached:
             break
         }
@@ -330,10 +290,8 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
             self.autoActive = false
             self.autoScroller.stop()
         }
-        if model.autoScrolling {
-            model.autoScrolling = false
-            model.status = "继续滚动，或点「完成」"
-        }
+        autoScrolling = false
+        hud.autoScrolling = false
     }
 
     // MARK: 结束
@@ -345,30 +303,55 @@ final class ScrollCaptureController: NSObject, SCStreamOutput, SCStreamDelegate 
         pointerMonitor = nil
         if let stream { Task { try? await stream.stopCapture() } }
         stream = nil
-        panel.orderOut(nil)
-        panel.close()
+        hud.close()
         ScrollCaptureController.current = nil
     }
 
-    private func finish() {
-        guard !finished else { return }
-        finished = true
+    private func output(_ kind: Output) {
+        guard !finished, !busy else { return }
+        busy = true
+        stopAuto()
         queue.async { [weak self] in
             guard let self else { return }
             let image = self.stitcher.makeImage()
-            DispatchQueue.main.async {
-                self.teardown()
-                if let image {
-                    self.completion(.finished(image, self.scale))
-                } else {
-                    self.completion(.cancelled)
-                }
+            DispatchQueue.main.async { self.deliver(image, kind) }
+        }
+    }
+
+    private func deliver(_ image: CGImage?, _ kind: Output) {
+        busy = false
+        guard !finished else { return }
+        guard let image else {
+            hud.toast("还没有截到画面，请先滚动页面", warning: true)
+            return
+        }
+        switch kind {
+        case .copy:
+            Clipboard.writeImage(image, scale: scale)
+            teardown()
+            completion(.done)
+        case .edit:
+            teardown()
+            completion(.edit(image, scale))
+        case .save:
+            guard let url = SavePanel.run(defaultName: Paths.screenshotName(), type: .png, level: .capturePanel) else {
+                hud.makeKey()
+                return
+            }
+            do {
+                guard let data = ImageFile.pngData(image, scale: scale) else { throw CocoaError(.fileWriteUnknown) }
+                try data.write(to: url)
+                teardown()
+                completion(.done)
+            } catch {
+                Alerts.info("保存失败", info: error.localizedDescription, level: .capturePanel)
+                hud.makeKey()
             }
         }
     }
 
     private func cancel() {
-        guard !finished else { return }
+        guard !finished, !busy else { return }
         teardown()
         completion(.cancelled)
     }

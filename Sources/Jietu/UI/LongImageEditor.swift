@@ -108,7 +108,7 @@ final class LongImageEditorController: NSObject, NSWindowDelegate, AnnotationEdi
     func editorNeedsDisplay() { canvas.needsDisplay = true }
     func editorContentChanged() {
         canvas.needsDisplay = true
-        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo, canScroll: false)
+        toolbar.update(tool: editor.tool, canUndo: editor.canUndo, canRedo: editor.canRedo)
         if let t = editor.tool, propertyBar.tool != t { propertyBar.configure(tool: t) }
         layoutBars()
     }

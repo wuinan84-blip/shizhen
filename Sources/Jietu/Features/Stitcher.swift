@@ -84,8 +84,9 @@ final class Stitcher {
             return .grew
         }
 
-        let expected = (viewTop - keyTop) + (hint ?? lastStep)
-        switch match(prev: prev, cur: frame, hint: expected) {
+        // 还没有滚动过（也没有外部预计）时不知道这一帧会滚多少
+        let step = hint ?? (lastStep != 0 ? lastStep : nil)
+        switch match(prev: prev, cur: frame, hint: step.map { (viewTop - keyTop) + $0 }) {
         case .none(let info):
             if failure == nil && !failureReported, let img = copyRows(base: base, bytesPerRow: bpr, from: 0, to: h) {
                 failure = (img, info)
@@ -228,8 +229,8 @@ final class Stitcher {
 
     // MARK: 找滚动距离
 
-    /// 当前帧滚动区域第 r 行 = 上一帧滚动区域第 r + dy 行。
-    private func match(prev: Frame, cur: Frame, hint: Int) -> Match {
+    /// 当前帧滚动区域第 r 行 = 上一帧滚动区域第 r + dy 行。hint 为预计的 dy，不知道时为空。
+    private func match(prev: Frame, cur: Frame, hint: Int?) -> Match {
         let h = cur.rows, k = Self.binCount
         let tol = Self.staticTolerance
         return prev.feat.withUnsafeBufferPointer { P -> Match in
@@ -313,7 +314,7 @@ final class Stitcher {
                 }
                 minima.sort { $0.1 < $1.1 }
                 var candidates = Set(minima.prefix(8).map { $0.0 })
-                for extra in [0, hint] where abs(extra) <= maxShift { candidates.insert(extra) }
+                for extra in [0, hint ?? 0] where abs(extra) <= maxShift { candidates.insert(extra) }
 
                 // 5. 在候选附近用全部列区间精确比较
                 var fineCache: [Int: Float] = [:]
@@ -346,7 +347,7 @@ final class Stitcher {
                 peaks.sort { $0.1 < $1.1 }
                 var distinct: [(Int, Float)] = []
                 for p in peaks where !distinct.contains(where: { abs($0.0 - p.0) <= 3 }) { distinct.append(p) }
-                guard let best = distinct.first else { return .none("没有候选位置") }
+                guard !distinct.isEmpty else { return .none("没有候选位置") }
 
                 // 6. 画面本身的纹理：错开 2 像素时的平均差异，用来判断「对得上」的标准
                 var texture: Float = 0
@@ -361,16 +362,71 @@ final class Stitcher {
                 texture = tn > 0 ? texture / (Float(tn) * dn) : 0
                 if texture < 0.8 { return .same }
                 let threshold = min(max(texture * 0.4, 1.0), 10)
-                guard best.1 <= threshold else {
-                    return .none(String(format: "最佳位置 %d 像素的差异 %.2f 超过阈值 %.2f（纹理 %.2f，变化的列区间 %d/%d，变化的行 %d/%d）",
-                                        best.0, best.1, threshold, texture, dynamic.count, k, changedCount, h))
+
+                // 7. 去掉差异最大的 1/4 行再比一次：不随滚动的水印、悬浮提示、光标等只影响少数行，
+                //    对得上的位置会降到接近 0，错开的位置仍然明显
+                var rowDiff = [Float](repeating: 0, count: region / step + 1)
+                func robust(_ dy: Int) -> Float {
+                    var n = 0
+                    var r = max(0, -dy)
+                    while r < min(region, region - dy) {
+                        let oc = (header + r) * k, op = (header + r + dy) * k
+                        var s: Float = 0
+                        for b in dynamic { s += abs(C[oc + b] - P[op + b]) }
+                        rowDiff[n] = s
+                        n += 1
+                        r += step
+                    }
+                    guard n > 0 else { return .infinity }
+                    rowDiff[0..<n].sort()
+                    let keep = max(1, n * 3 / 4)
+                    var s: Float = 0
+                    for i in 0..<keep { s += rowDiff[i] }
+                    return s / (Float(keep) * dn)
+                }
+                // 真的滚动了 dy，变了的那些行错开 dy 后应该对得上，好过按「没动」比（实测真实滚动不超过 0.71 倍）；
+                // 悬浮提示这类新出现的局部内容，错开多少都对不上，不能算作滚动
+                func changedRowsDiff(_ dy: Int) -> Float {
+                    var s: Float = 0
+                    var n = 0
+                    for r in max(0, -dy)..<min(region, region - dy) where changed[header + r] {
+                        let oc = (header + r) * k, op = (header + r + dy) * k
+                        for b in dynamic { s += abs(C[oc + b] - P[op + b]) }
+                        n += 1
+                    }
+                    return n > 0 ? s / (Float(n) * dn) : .infinity
+                }
+                let unmoved = changedRowsDiff(0)
+                var peaksToScore = distinct.filter { $0.0 == 0 || changedRowsDiff($0.0) < unmoved * 0.85 }
+                if !peaksToScore.contains(where: { $0.0 == 0 }) { peaksToScore.append((0, fine(0))) }
+                // 两个差异一起排：只看平均会被局部遮挡带偏，只看去掉 1/4 后的，大片空白的页面里错开的位置也接近 0
+                typealias Scored = (dy: Int, mean: Float, robust: Float)
+                func score(_ s: Scored) -> Float { s.mean + 2 * s.robust }
+                let scored: [Scored] = peaksToScore.map { (dy: $0.0, mean: $0.1, robust: robust($0.0)) }
+                    .sorted { score($0) < score($1) }
+                let best = scored[0]
+                let robustThreshold = min(max(texture * 0.15, 0.5), 4)
+                guard best.mean <= threshold || best.robust <= robustThreshold else {
+                    return .none(String(format: "最佳位置 %d 像素的差异 %.2f 超过阈值 %.2f，去掉最差 1/4 行后 %.2f 超过 %.2f（纹理 %.2f，变化的列区间 %d/%d，变化的行 %d/%d）",
+                                        best.dy, best.mean, threshold, best.robust, robustThreshold, texture, dynamic.count, k, changedCount, h))
                 }
 
-                // 7. 几个位置差不多一样好时（重复花纹），选最接近预计滚动距离的
-                let margin = max(0.25, best.1 * 0.15)
-                let chosen = distinct.filter { $0.1 <= min(best.1 + margin, threshold) }
-                    .min(by: { abs($0.0 - hint) < abs($1.0 - hint) })?.0 ?? best.0
-                return chosen == 0 ? .same : .moved(chosen, header: header, footer: footer)
+                // 8. 别的位置也差不多一样好（重复的表格行等）：只有离预计滚动距离足够近才采用，
+                //    否则宁可当作没接上，也不要接错位置漏掉内容
+                let rivals = scored.dropFirst().filter {
+                    $0.mean < max(best.mean * 2, best.mean + 0.5) && $0.robust < max(best.robust * 2, best.robust + 0.5)
+                }
+                if rivals.isEmpty { return best.dy == 0 ? .same : .moved(best.dy, header: header, footer: footer) }
+                let options = [best] + rivals
+                let list = options.map { "\($0.dy)" }.joined(separator: "、")
+                guard let hint, let near = options.min(by: { abs($0.dy - hint) < abs($1.dy - hint) }) else {
+                    return .none("几个位置都差不多对得上（\(list) 像素），不知道滚动了多少")
+                }
+                let spacing = options.filter { $0.dy != near.dy }.map { abs($0.dy - near.dy) }.min() ?? Int.max
+                guard abs(near.dy - hint) * 3 <= spacing else {
+                    return .none("几个位置都差不多对得上（\(list) 像素），离预计的 \(hint) 像素都不够近")
+                }
+                return near.dy == 0 ? .same : .moved(near.dy, header: header, footer: footer)
             }
         }
     }
@@ -418,6 +474,29 @@ final class Stitcher {
         for s in parts {
             y -= s.height
             ctx.draw(s, in: CGRect(x: 0, y: y, width: width, height: s.height))
+        }
+        return ctx.makeImage()
+    }
+
+    /// 整张长图等比缩到 maxWidth × maxHeight（像素）以内，用于预览。
+    func makeThumbnail(maxWidth: Int, maxHeight: Int) -> CGImage? {
+        var parts: [CGImage] = []
+        if let headerStrip { parts.append(headerStrip) }
+        parts += strips
+        if let footerStrip { parts.append(footerStrip) }
+        let total = parts.reduce(0) { $0 + $1.height }
+        guard width > 0, total > 0, maxWidth > 0, maxHeight > 0 else { return nil }
+        let s = min(1, CGFloat(maxWidth) / CGFloat(width), CGFloat(maxHeight) / CGFloat(total))
+        let w = max(1, Int((CGFloat(width) * s).rounded()))
+        let h = max(1, Int((CGFloat(total) * s).rounded()))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.scaleBy(x: CGFloat(w) / CGFloat(width), y: CGFloat(h) / CGFloat(total))
+        var y = total
+        for p in parts {
+            y -= p.height
+            ctx.draw(p, in: CGRect(x: 0, y: y, width: width, height: p.height))
         }
         return ctx.makeImage()
     }

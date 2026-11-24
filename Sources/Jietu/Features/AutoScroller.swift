@@ -51,7 +51,9 @@ final class AutoScroller {
         frameHeight = viewHeight * scale
         minAmount = max(6, viewHeight * 0.03)
         maxAmount = max(minAmount, viewHeight * 0.6)
-        amount = max(minAmount, viewHeight * 0.25)
+        // 第一步先小步试探：有的应用会把滚轮放大好几倍，步子大了会一下滚过整屏，
+        // 表格这类重复的画面可能在错开几行的位置「对得上」，悄悄漏掉内容
+        amount = max(minAmount, viewHeight * 0.08)
     }
 
     var isRunning: Bool { phase != .idle }

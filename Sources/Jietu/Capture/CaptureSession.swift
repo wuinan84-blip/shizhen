@@ -162,8 +162,9 @@ final class CaptureSession: OverlayViewDelegate {
         end()
     }
 
-    func overlayConfirmModeSwitch() -> Bool {
-        let ok = Alerts.confirm("切换到录屏会清空已画的标注", info: "确定要切换吗？", ok: "清空并切换", level: .capturePanel)
+    func overlayConfirmModeSwitch(to mode: CaptureMode) -> Bool {
+        let name = mode == .record ? "录屏" : "滚动截图"
+        let ok = Alerts.confirm("切换到\(name)会清空已画的标注", info: "确定要切换吗？", ok: "清空并切换", level: .capturePanel)
         window.makeKeyAndOrderFront(nil)
         return ok
     }
@@ -192,7 +193,9 @@ final class CaptureSession: OverlayViewDelegate {
                 NSApp.activate(ignoringOtherApps: true)
                 self.window.makeKeyAndOrderFront(nil)
                 self.window.makeFirstResponder(self.overlay)
-            case .finished(let image, let scale):
+            case .done:
+                self.end()
+            case .edit(let image, let scale):
                 self.end()
                 LongImageEditorController.open(image: image, scale: scale)
             }
